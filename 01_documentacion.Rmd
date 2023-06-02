@@ -1,0 +1,335 @@
+---
+title: "Football Analysis"
+output: html_notebook
+author: "Helios Garcia"
+date: "May 2023"
+---
+
+## Introduction
+
+This is an notebook to show the process I usually take to analyze data in order to solve some questions related to database analysis.
+
+The source of the database is from [Kaggle](https://www.kaggle.com/datasets/hugomathien/soccer). The data is a relational database of sqlite and it have 7 tables with information of 8 years of football seasons (2008-2015) of 11 European countries. 
+
+This code was made in *Rstudio* and has some querys from **SLQ** integrated in order to show my abilities in both languages. This works because the source of data is an sql file but it can be imported to Rstudio.
+
+For this project, I want to answer this questions related to the data:
+1. ¿What was the average age of football players in Europe in 2008 and 2016?
+2. ¿Who was the best player in Europe according to the overall ranking?
+3. What team score the most goals in Europe between 2008 and 2016?
+4. ¿What was the team that had the most points in Europe and what teams were the best home or away?
+
+## Import data
+
+The first step I take in the analysis process is to get to know the database.
+
+Let´s start charging the packages we need: 
+```{r}
+library(RSQLite)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(plotly)
+```
+After downloading the data, we need to import it to Rstudio.
+First, we need to establish a connection between Rstudio and the SQL database
+```{r}
+bd_football <- dbConnect(SQLite(), dbname="database.sqlite")
+```
+The package *RSQLite* includes different functions to manipulate SQL with querys in Rstudio.
+We see the names of the tables that the database includes
+```{r echo=TRUE}
+bd_names <- dbListTables(bd_football)
+
+print(bd_names)
+```
+With that code we can see all names in the database, so we can select the table *Player* and see more of it.We need to use SQL code to get the table to Rstudio:
+```{r echo = TRUE}
+players <- #save the name of the table
+  as_tibble( #Convert to tibble
+    dbGetQuery(bd_football, "Select* from Player")) %>% 
+  clean_names()
+
+players #Print the tibble players
+```
+Now, we can start to answer the above questions
+
+# 1.What was the average age of football players in Europe in 2008 and 2016?  
+We saw that the table Players had the information needed to answe this first question.
+There are to ways we can do it.
+The first is with SQL:
+```{r echo=TRUE}
+as_tibble(dbGetQuery(bd_football, 
+                     "Select 
+                    avg(strftime('%Y', '2008-12-12 00:00:00') - 
+                     strftime('%Y', birthday))  as average_age_2008,
+                     avg(strftime('%Y', '2016-12-12 00:00:00') - 
+                     strftime('%Y', birthday)) as average_age_2016
+                     From Player"))
+```
+That SQL query helped us to extract the year of the date of birth of each player and then we rest it to 2008 and 2016 so we could get the average.
+However, we can also do this in R:
+```{r echo=TRUE}
+players %>% 
+  select(birthday) %>% 
+  mutate(birthday = as_date(birthday),
+         year_of_birth = year(birthday),
+         age_2008 = 2008 - year_of_birth,
+         age_2016 = 2016 - year_of_birth) %>% 
+  summarise(avg_age_2008 = mean(age_2008),
+            avg_age_2016 = mean(age_2016))
+```
+So, we have the average of age but we can do a little bit more to explore the data. For example, lets include a graph of the relation of height and weight of the players.
+```{r echo=TRUE}
+
+players %>% 
+  mutate(birthday = as_date(birthday),
+         year_of_birth = year(birthday),
+         age_2008 = 2008 - year_of_birth) %>% #Obtain the age of the players in 2008
+  mutate(group_age = if_else(age_2008 <21, #New variable to get the group of age
+                             "Less than 21",
+                             if_else(age_2008 <26, 
+                                     "Less than 26",
+                                     if_else(age_2008 <26, 
+                                             "Less than 26",
+                                             if_else(age_2008 <30, 
+                                                     "Less than 30",
+                                                     "More than 30")))
+                             
+                             )) %>% 
+  ggplot(aes(weight, height, col = group_age))+ #Start the graph
+  geom_jitter(width = 1.5)+ #Add some noise to the points
+  guides(colour = guide_legend(override.aes = list(size=3)))+ #Make the point in the legend bigger
+  labs(title = "Relation Height and Weight",
+       subtitle = "European Football Players in 2008",
+       x = "W (LB)",
+       y = "H (CM)",
+       col = "Age Group")+
+  scale_color_manual(values = c("#440154", #Make the color scale
+                                "#3b528b", 
+                                "#21918c",
+                                "#fde725"))+
+  scale_x_continuous(breaks = c(120, 150, 175,200, 220, 240))+ #Make the breaks
+  theme(plot.title = element_text(hjust = .5),
+        plot.subtitle = element_text(hjust = .5),
+        legend.background = element_blank(),
+        legend.key = element_blank()) #Adjust some elements
+
+```
+# 2. Who was the best player in Europe according to the overall ranking?
+First, lets get the data with SQL. We can get data from the table Player such as the height, weight and name. With the table Player_Attributes, we can find the overall rating in every season so we can do an average. With this simple SQL code we get the data from both tables and then create a new variable with Tidyverse. 
+```{r echo=TRUE}
+(rating_height <- as_tibble(dbGetQuery(bd_football, 
+                     "Select b.player_name, 
+                     b.height, 
+                     b.weight,
+                     sum(a.overall_rating) as overall_rating, 
+                     avg(overall_rating) as average_rating
+                     from Player_Attributes as a
+                     Left Join Player as b
+                     On b.player_api_id = a.player_api_id
+                     Group by a.player_api_id
+                     Order by average_rating desc")) %>% 
+  mutate(weight = weight * .454,
+         weight_group = if_else(weight<=60, "Less than 60kg",
+                                if_else(weight<=70, "Less than 70kg",
+                                        if_else(weight <= 80, "Less than 75kg",
+                                                "More than 80kg")))))
+```
+We found that Lionel Messi was the best ranked player with a overall rating in Europe between 2008 and 2016. But we can use the tibble created above to graph the distribution of rating and height to see the relation.
+```{r echo=TRUE}
+rating_height %>% 
+  ggplot(aes(height, average_rating))+
+  geom_jitter(aes(col = weight_group),
+              size = 2.5,
+              width = 1.5,
+              height = 1.5)+
+  geom_text(data = rating_height %>% 
+              filter(average_rating == max(rating_height$average_rating)|
+                       average_rating == max(rating_height$average_rating[rating_height$average_rating!=max(rating_height$average_rating)])),
+             aes(label = player_name),
+            check_overlap = T, 
+            nudge_x = 0.16,
+            hjust = 0)+
+  scale_color_manual(values = c("#fde725",
+                                "#21918c", 
+                                "#3b528b",
+                                "#440154"))+
+  guides(colour = guide_legend(override.aes = list(size=4)))+
+  labs(title = "Average Overall Ranking and Height in European Footballers",
+       subtitle = "2008 - 2016",
+       color = "Weight Group",
+       x = "Height",
+       y = "Average Overall Rating")+
+  theme(plot.title = element_text(hjust = .5),
+        plot.subtitle = element_text(hjust = .5),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+```
+# 3.What team score the most goals in Europe between 2008 and 2016?  
+Lets answer this question with a simple SQL code. We need to use two tables, the Team and Match so we can have the complete name of the team and sum the away and home goals of each team so we can get the top scorers.
+```{r echo=TRUE}
+as_tibble(dbGetQuery(bd_football, 
+                     "SELECT
+           b.team_long_name as team,
+           sum(a.home_team_goal)+ sum(a.away_team_goal) as goals
+           FROM Match as a
+           Left Join Team as b on b.team_api_id = a.home_team_api_id 
+           Group by b.team_api_id
+           Order by goals Desc
+           "))
+```
+Lets see the distrution of goals scored by european teams:
+
+
+To answer the next questions, lets start by creating a new table with the data we need. Now, we know the information of the tables Match and Team, so we can get the information of each match played in every season in all countries. 
+Also, based on the goals that each team scored we can make the points each one got. If you are not familiar with football, when a team wins they get 3 points, 1 for a tie and 0 for losing.
+The next SQL code creates that table called points:
+```{r echo=TRUE}
+
+(points <- as_tibble(dbGetQuery(bd_football, 
+                     "SELECT
+           b.team_long_name as home_team,
+           a.home_team_goal as home_goals,
+           (Case
+           When a.home_team_goal = a.away_team_goal Then 1
+           When a.home_team_goal > a.away_team_goal Then 3
+           When a.home_team_goal < a.away_team_goal Then 0
+           End) as home_point,
+           c.team_long_name as away_team,
+           a.away_team_goal as away_goals,
+           (Case
+           When a.home_team_goal = a.away_team_goal Then 1
+           When a.home_team_goal > a.away_team_goal Then 0
+           When a.home_team_goal < a.away_team_goal Then 3
+           End) as away_point,
+           a.date,
+           a.season,
+           d.name as league_name,
+           e.name as country
+           FROM Match as a
+           Left Join Team as b on b.team_api_id = a.home_team_api_id 
+           Left Join Team as c on c.team_api_id = a.away_team_api_id
+           Left Join League as d on d.country_id = a.country_id
+           Left Join Country as e on e.id = a.country_id
+           "))) 
+```
+# 4. What was the team that had the most points in Europe and what teams were the best home and away team?
+Let´s see how can we get the information with a more complex SQL query with subquerys and joins to get the variables we want:
+```{r echo=TRUE}
+as_tibble(dbGetQuery(bd_football,
+                     "
+              Select
+                home.home_team as team,
+                home.total_home_points as total_home_points,
+                away.total_away_points as total_away_points
+              From
+                     (
+                     Select
+                     z.id_home as id_home,
+                     z.home_team,
+                     sum(z.home_point) as total_home_points
+                     From
+                     (Select
+                     b.team_long_name as home_team,
+                     c.team_long_name as away_team,
+                     a.home_team_api_id as id_home,
+                     (Case
+                     When a.home_team_goal = a.away_team_goal Then 1
+                     When a.home_team_goal > a.away_team_goal Then 3
+                     When a.home_team_goal < a.away_team_goal Then 0
+                     End) as home_point,
+                     (Case
+                     When a.home_team_goal = a.away_team_goal Then 1
+                     When a.home_team_goal > a.away_team_goal Then 0
+                     When a.home_team_goal < a.away_team_goal Then 3
+                     End) as away_point,
+                     a.away_team_api_id as id_away
+                     FROM Match as a
+                     Left Join Team as b on b.team_api_id = a.home_team_api_id
+                     Left Join Team as c on c.team_api_id = a.away_team_api_id) as z
+                     Group by id_home) as home
+              Inner Join (
+                          Select
+                          z.id_away as id_away,
+                          z.away_team,
+                          sum(z.away_point) as total_away_points
+                           From
+                          (Select
+                          b.team_long_name as home_team,
+                          c.team_long_name as away_team,
+                          a.home_team_api_id as id_home,
+                          (Case
+                          When a.home_team_goal = a.away_team_goal Then 1
+                          When a.home_team_goal > a.away_team_goal Then 3
+                          When a.home_team_goal < a.away_team_goal Then 0
+                          End) as home_point,
+                          (Case
+                          When a.home_team_goal = a.away_team_goal Then 1
+                          When a.home_team_goal > a.away_team_goal Then 0
+                          When a.home_team_goal < a.away_team_goal Then 3
+                          End) as away_point,
+                          a.away_team_api_id as id_away
+                          FROM Match as a
+                          Left Join Team as b on b.team_api_id = a.home_team_api_id
+                          Left Join Team as c on c.team_api_id = a.away_team_api_id) as z
+                          Group by id_away) as away
+              On away.away_team = home.home_team
+              Order by total_home_points desc"
+  
+))
+```
+Now, the same process but in Tidyverse and a graph to visualize the data:
+```{r echo=TRUE}
+points_home <- points %>% 
+  group_by(home_team) %>% 
+  summarise(sum_home_points = sum(home_point)) %>% 
+  rename(team = "home_team") %>% 
+  arrange(-sum_home_points) %>% 
+  filter(sum_home_points > 330)
+
+points_away <- points %>% 
+  group_by(away_team) %>% 
+  summarise(sum_away_points = sum(away_point)) %>% 
+  rename(team = "away_team") %>% 
+  arrange(-sum_away_points) %>% 
+  filter(sum_away_points >250)
+
+
+home_away_points <- inner_join(points_home, points_away, by = join_by(team)) %>% 
+  pivot_longer(-team, 
+               names_to = "away_or_home",
+               values_to = "points") %>%
+  mutate(away_or_home = if_else(away_or_home == "sum_home_points",
+                        "Home points",
+                        "Away points")) %>% 
+  ggplot(aes(fct_reorder(team, points), points))+
+  geom_col(aes(fill = away_or_home), 
+           position = position_dodge(width = .9),
+           col = "black")+
+  coord_flip()+
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(0, 420))+
+  scale_fill_manual(values = c("#B12A90FF", 
+                                "#0D0887FF"))+
+  labs(title = "Home and Away Points in Europe",
+       subtitle = "2008-2016",
+       fill = "",
+       x = "Team", 
+       y = "Points")+
+  theme_bw()+
+  theme(panel.grid = element_line(linetype = 3,
+                                  color = "black"),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size = 12),
+        legend.spacing.y = unit(.2, "cm"),
+        legend.title = element_text(hjust = .5),
+        legend.position = "bottom",
+        plot.title = element_text(hjust = .5,
+                                  face = "bold"),
+        plot.subtitle = element_text(hjust = .5,
+                                     face = "bold"))
+
+ggplotly(home_away_points, width = 1000)
+
+```
